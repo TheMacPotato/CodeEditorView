@@ -499,6 +499,12 @@ extension CodeStorageDelegate {
   /// 
   func tokenise(range originalRange: NSRange, in textStorage: NSTextStorage) -> (affectedRange: NSRange, lines: Int) {
 
+    // Extend the range to line boundaries. Because we cannot parse partial tokens, we at least need to go to word
+    // boundaries, but because we have line bounded constructs like comments to the end of the line and it is easier to
+    // determine the line boundaries, we use those.
+    let lines = lineMap.linesContaining(range: originalRange),
+        range = lineMap.charRangeOf(lines: lines)
+
     // NB: The range property of the tokens is in terms of the entire text (not just `line`).
     func tokeniseAndUpdateInfo<Tokens: Collection<Tokeniser<LanguageConfiguration.Token,
                                                               LanguageConfiguration.State>.Token>>
@@ -602,15 +608,29 @@ extension CodeStorageDelegate {
       }
     }
 
-    guard let tokeniser = tokeniser else { return (affectedRange: originalRange, lines: 1) }
+    // Token-free language configurations (e.g. plain text with all bracket kinds disabled) have no
+    // tokeniser, and the regex scan is skipped entirely. Line info must nevertheless be
+    // (re)established for the affected lines: diagnostics (`add(message:)`) attach to a line's
+    // `info`, and switching from a tokenising language to a token-free one must not leave the
+    // previous language's tokens and comment ranges behind.
+    guard let tokeniser = tokeniser else {
 
-    // Extend the range to line boundaries. Because we cannot parse partial tokens, we at least need to go to word
-    // boundaries, but because we have line bounded constructs like comments to the end of the line and it is easier to
-    // determine the line boundaries, we use those.
-    let lines = lineMap.linesContaining(range: originalRange),
-        range = lineMap.charRangeOf(lines: lines)
+      guard !lines.isEmpty else { return (affectedRange: originalRange, lines: 1) }
 
-    guard let stringRange = Range<String.Index>(range, in: textStorage.string) 
+      var commentDepth      = 0
+      var lastCommentStart  = nil as Int?
+      var curlyBracketDepth = 0
+      for line in lines {
+        tokeniseAndUpdateInfo(for: line,
+                              tokens: [LanguageConfiguration.Tokeniser.Token](),
+                              commentDepth: &commentDepth,
+                              lastCommentStart: &lastCommentStart,
+                              curlyBracketDepth: &curlyBracketDepth)
+      }
+      return (affectedRange: range, lines: lines.count)
+    }
+
+    guard let stringRange = Range<String.Index>(range, in: textStorage.string)
     else { return (affectedRange: originalRange, lines: lines.count) }
 
     // Determine the comment depth as determined by the preceeeding code. This is needed to determine the correct
